@@ -1,0 +1,22 @@
+# Secrets
+.env
+backend/.env
+*.json
+!backend/.env.example
+
+# Firebase credentials (do not commit)
+backend/firebase-*.json
+firebase-*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Build / caches
+node_modules/
+dist/
+.pytest_cache/

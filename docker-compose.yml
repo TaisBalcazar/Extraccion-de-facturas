@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: ./backend
+    container_name: facturas_api_prod_base
+    ports:
+      - "8001:8000"
+    env_file:
+      - ./backend/.env
