@@ -4,3 +4,11 @@ firebase-admin==6.4.0
 python-dotenv==1.0.1
 pdfplumber==0.11.4
 python-multipart==0.0.9
+pymupdf==1.24.11
+easyocr==1.7.2
+pytesseract>=0.3.10
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+openpyxl>=3.1.0
+airportsdata>=20240101

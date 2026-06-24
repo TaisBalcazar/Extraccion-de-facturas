@@ -13,14 +13,80 @@ import pdfplumber
 
 from app.services.schemas import Category2Schema
 from app.services.extractors.base import BaseCategoryExtractor
-from app.services.regex_patterns import RegexPatternLibrary
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Catálogo oficial UTPL: medidor → nombre_medidor
+# Clave: número de medidor (solo dígitos, tal como extrae _extract_digits_from_patterns).
+# Valor: nombre del medidor.
+# Nota: 18-234549 se almacena como "18234549" porque el extractor elimina guiones.
+# ──────────────────────────────────────────────────────────────────────────────
+CATALOGO_MEDIDORES: Dict[str, str] = {
+    "33733":      "SAN CAYETANO (SN)",
+    "32789":      "SAN CAYETANO (SN)",
+    "32369":      "CASA DE FORMACIÓN MARISTA",
+    "32373":      "EDIFICIO 3,4,5 Y 6",
+    "31933":      "MAD",
+    "31947":      "EDIF CENTRAL, CAPILLA, MISIONES",
+    "202951":     "RESIDENCIA IDENTE",
+    "32545":      "EDIFICIO R LAB ALIMENTOS JUNTO A ECOLAC",
+    "32783":      "EDIFICIO V-P-BIOPRODUCTOS LAB NUEVO QUIMICA Y P1 EDIF NUEVO MEDICINA",
+    "1269208":    "SAN CAYETANO (SN)",
+    "1269207":    "SAN CAYETANO (SN)",
+    "1269206":    "SAN CAYETANO (SN)",
+    "205934":     "SAN CAYETANO (SN)",
+    "33659":      "UGTI",
+    "202955":     "SAN CAYETANO (SN)",
+    "28978":      "SAN CAYETANO (SN)",
+    "31922":      "CAFETERIA",
+    "31925":      "C. CONVENCIONES, ARCHIVO, CANCHAS TAPADAS Y DGCOM",
+    "32317":      "SAN CAYETANO (SN)",
+    "32316":      "SAN CAYETANO (SN)",
+    "32377":      "EDIFICIO 1, 2, 7, 8, OCTOGONO, CANCHAS, MUSEO Y GRADAS ELÉCTRICAS",
+    "32779":      "EDIFICIO Q y M",
+    "2011204737": "SAN CAYETANO (SN)",
+    "203893":     "SAN CAYETANO (SN)",
+    "33607":      "EDIFICIO S DGTI",
+    "33683":      "EDIFICIO 9",
+    "240297":     "CENTRO DE REUNIONES RESIDENCIA IDENTE",
+    "33775":      "SAN CAYETANO (SN)",
+    "205771":     "SAN CAYETANO (SN)",
+    "207555":     "SAN CAYETANO (SN)",
+    "202653":     "SAN CAYETANO (SN)",
+    "1000362554": "SAN CAYETANO (SN)",
+    "1000362557": "SAN CAYETANO (SN)",
+    "242170":     "RESIDENCIA IDENTE",
+    "24711":      "SAN CAYETANO (SN)",
+    "246903":     "EDIF 10 AGO",
+    "33942":      "PARQUEADERO UTPL",
+    "28625":      "EUCALIPTOS",
+    "34191":      "EDIFICIO 1, 2, 7, 8, OCTOGONO, CANCHAS, MUSEO Y GRADAS ELÉCTRICAS",
+    "34270":      "EDIF D FACULTADES",
+    "34343":      "EDIF CENTRAL, CAPILLA, MISIONES",
+    "34447":      "LABORATORIOS EDIFICIO Q",
+    "18234549":   "BODEGA VIA A ZAMORA",  # medidor 18-234549 sin guion
+}
 
 
 class Category2Extractor(BaseCategoryExtractor):
     """Extractor especializado para facturas de electricidad."""
-    
+
     def __init__(self):
         super().__init__(Category2Schema())
+
+    @staticmethod
+    def _lookup_nombre_medidor(medidor: Optional[str]) -> Optional[str]:
+        """Busca el nombre del medidor en el catálogo UTPL por número de medidor."""
+        if not medidor:
+            return None
+        # Normalizar: solo dígitos (el extractor ya debería haberlo hecho, pero por seguridad).
+        key = re.sub(r"\D", "", str(medidor))
+        nombre = CATALOGO_MEDIDORES.get(key)
+        if nombre:
+            print(f"[CAT2 EXTRACTOR] Medidor {key} -> nombre_medidor: {nombre}")
+        else:
+            print(f"[CAT2 EXTRACTOR] Medidor {key} no encontrado en catalogo")
+        return nombre
 
     @staticmethod
     def _to_float(raw_value: str) -> Optional[float]:
@@ -91,9 +157,27 @@ class Category2Extractor(BaseCategoryExtractor):
 
     def _extract_consumo_from_any_kwh(self, text: str) -> Optional[float]:
         """Fallback final: toma un valor cercano a kWh cuando no hay etiqueta clara."""
+        # Intento 1: número directamente antes de KWH (misma línea o línea anterior).
         matches = re.findall(r"([0-9][0-9\.,]*)\s*k\s*w\s*h", text or "", re.IGNORECASE)
         candidates = [self._to_float(m) for m in matches]
         candidates = [c for c in candidates if c is not None and c > 0]
+
+        # Intento 2 (OCR escaneado): KWH en línea sola, número en la línea previa.
+        if not candidates:
+            lines = (text or "").splitlines()
+            for i, line in enumerate(lines):
+                if re.fullmatch(r"\s*k\s*w\s*h\s*", line.strip(), re.IGNORECASE):
+                    # Buscar hacia atrás el primer número en las 3 líneas anteriores.
+                    for prev in lines[max(0, i - 3):i][::-1]:
+                        nums = re.findall(r"([0-9][0-9\.,]+)", prev)
+                        for raw in reversed(nums):
+                            val = self._to_float(raw)
+                            if val is not None and val > 0:
+                                candidates.append(val)
+                                break
+                        if candidates:
+                            break
+
         if not candidates:
             return None
 
@@ -323,15 +407,24 @@ class Category2Extractor(BaseCategoryExtractor):
                 ],
             )
 
-            # Nro. factura con solo números
+            # Nro. factura con solo números.
+            # Permite que la etiqueta y el número estén en líneas distintas (OCR escaneado).
             datos["nro_factura"] = self._extract_digits_from_patterns(
                 texto_completo,
                 [
                     r"nro\.?\s*factura\s*[:\-]?\s*([0-9\-]+)",
                     r"n[°ºo]\.?\s*factura\s*[:\-]?\s*([0-9\-]+)",
                     r"factura\s*[:#]?\s*([0-9\-]{6,})",
+                    r"nro\.?\s+factura[\s\S]{0,200}?(\d{3}-\d{3}-\d{6,})",
                 ],
             )
+            # Fallback: formato CNEL (ej. 057-999-002487603) pero solo en las primeras
+            # 2000 chars (primera página), para evitar capturar números de recibos de pago.
+            if not datos["nro_factura"]:
+                primera_pagina = texto_completo[:2000]
+                m = re.search(r"\b(\d{3}-\d{3}-\d{6,})\b", primera_pagina)
+                if m:
+                    datos["nro_factura"] = re.sub(r"\D", "", m.group(1))
             
             # Medidor: conservar solo el número
             datos["medidor"] = self._extract_digits_from_patterns(
@@ -342,7 +435,10 @@ class Category2Extractor(BaseCategoryExtractor):
                     r"contador\s*[:#]?\s*([A-Z0-9\-]+)",
                 ],
             )
-            
+
+            # Nombre del medidor: asignado automáticamente desde catálogo UTPL
+            datos["nombre_medidor"] = self._lookup_nombre_medidor(datos.get("medidor"))
+
             # Razón Social
             datos["razon_social"] = None
             match_rs = re.search(
@@ -379,10 +475,14 @@ class Category2Extractor(BaseCategoryExtractor):
                 ],
             )
 
-            # Fechas: emisión, periodo inicio y fin
+            # Fechas: emisión, periodo inicio y fin.
+            # OCR escaneado puede poner la etiqueta y la fecha en líneas distintas,
+            # por eso se usa [\s\S]{0,200}? (no-greedy) para cruzar líneas.
+            _DATE_RE = r"(\d{2}[-/]\d{2}[-/]\d{4})"
+
             datos["fecha_emision"] = None
             match_emision = re.search(
-                r"fecha\s+de\s+emisi[óo]n\s*[:\-]?\s*([0-9]{2}[-/][0-9]{2}[-/][0-9]{4})",
+                r"fecha\s+de\s+emisi[óo]n[\s\S]{0,200}?" + _DATE_RE,
                 texto_completo, re.IGNORECASE
             )
             if match_emision:
@@ -390,7 +490,7 @@ class Category2Extractor(BaseCategoryExtractor):
 
             datos["periodo_inicio"] = None
             match_desde = re.search(
-                r"fecha\s+desde\s*[:\-]?\s*([0-9]{2}[-/][0-9]{2}[-/][0-9]{4})",
+                r"fecha\s+desde[\s\S]{0,100}?" + _DATE_RE,
                 texto_completo, re.IGNORECASE
             )
             if match_desde:
@@ -406,7 +506,7 @@ class Category2Extractor(BaseCategoryExtractor):
 
             datos["periodo_fin"] = None
             match_hasta = re.search(
-                r"fecha\s+hasta\s*[:\-]?\s*([0-9]{2}[-/][0-9]{2}[-/][0-9]{4})",
+                r"fecha\s+hasta[\s\S]{0,100}?" + _DATE_RE,
                 texto_completo, re.IGNORECASE
             )
             if match_hasta:
@@ -418,6 +518,7 @@ class Category2Extractor(BaseCategoryExtractor):
                 [
                     r"lectura\s+anterior\s*[:\-]?\s*([0-9][0-9\.,]*)",
                     r"lect\.\s*anterior\s*[:\-]?\s*([0-9][0-9\.,]*)",
+                    r"lectura\s+anterior[\s\S]{0,80}?([0-9]{4,}(?:\.[0-9]+)?)",
                 ],
             )
             datos["lectura_actual"] = self._extract_float_from_patterns(
@@ -425,6 +526,7 @@ class Category2Extractor(BaseCategoryExtractor):
                 [
                     r"lectura\s+actual\s*[:\-]?\s*([0-9][0-9\.,]*)",
                     r"lect\.\s*actual\s*[:\-]?\s*([0-9][0-9\.,]*)",
+                    r"lectura\s+actual[\s\S]{0,80}?([0-9]{4,}(?:\.[0-9]+)?)",
                 ],
             )
             datos["diferencia_consumo"] = self._extract_float_from_patterns(

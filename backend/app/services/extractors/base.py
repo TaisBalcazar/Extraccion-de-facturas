@@ -57,14 +57,14 @@ class BaseCategoryExtractor(ABC):
     
     def extract_pdf_text(self, file_content: bytes) -> str:
         """
-        Extrae todo el texto de un PDF.
-        
+        Extrae todo el texto de un PDF; aplica OCR si el PDF está escaneado.
+
         Args:
             file_content: Contenido binario del PDF
-        
+
         Returns:
-            Texto completo extraído del PDF
-        
+            Texto completo extraído del PDF (o por OCR si estaba escaneado)
+
         Raises:
             Exception: Si hay error al procesar el PDF
         """
@@ -73,6 +73,12 @@ class BaseCategoryExtractor(ABC):
                 texto_completo = ""
                 for page in pdf.pages:
                     texto_completo += page.extract_text() or ""
+
+            from app.services.ocr_extractor import extract_text_smart
+            texto_completo, ocr_usado = extract_text_smart(file_content, texto_completo)
+            if ocr_usado:
+                print(f"📷 OCR aplicado ({self.category_name})")
+
             return texto_completo
         except Exception as e:
             print(f"❌ Error extrayendo texto PDF: {e}")

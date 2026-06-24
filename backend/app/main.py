@@ -73,7 +73,6 @@ ZONAS_BASE = [
     }
 ]
 
-
 CATEGORIAS_BASE = [
     {
         "id": "cat-1",
@@ -132,15 +131,19 @@ CATEGORIAS_BASE = [
     }
 ]
 
+
 # =========================
 # AUTO INIT
 # =========================
 def init_catalogos():
     db = get_firestore_client()
 
+    if db is None:  # ← GUARDIA: evita crash si Firebase no está disponible
+        print("⚠️  Firebase no disponible, saltando init de catálogos")
+        return
+
     print("🔍 Inicializando catálogos...")
 
-    # ZONAS
     for zona in ZONAS_BASE:
         ref = db.collection("zonas").document(zona["id"])
         if not ref.get().exists:
@@ -152,7 +155,6 @@ def init_catalogos():
             })
             print(f"✔ Zona creada: {zona['nombre']}")
 
-    # CATEGORIAS
     for cat in CATEGORIAS_BASE:
         ref = db.collection("categorias").document(cat["id"])
         if not ref.get().exists:
@@ -164,19 +166,22 @@ def init_catalogos():
             })
             print(f"✔ Categoría creada: {cat['nombre']}")
 
-# LIFESPAN (NUEVO)
+
+# =========================
+# LIFESPAN
 # =========================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Iniciando API...")
-    init_catalogos()  # La carga de archivos se ejecuta aquí
-    print("✅ Catálogos listos")
-    yield  # 👈 la app corre aquí
-
+    init_catalogos()
+    print("✅ API lista")
+    yield
     print("🛑 Cerrando API...")
 
-# APP
 
+# =========================
+# APP
+# =========================
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Facturas API",

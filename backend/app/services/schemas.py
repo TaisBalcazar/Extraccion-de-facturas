@@ -102,45 +102,123 @@ COMMON_FIELDS = [
 # ══════════════════════════════════════════════════════════════
 
 class Category1Schema(CategorySchema):
-    """Categoría 1: Gasolina, Diesel, Combustibles y Refrigeración."""
-    
+    """Categoría 1: Reporte anual de consumo de combustible (Excel)."""
+
     category_id = "cat-1"
     category_name = "Categoría 1 - Gasolina/Combustible"
-    
+
     common_fields = COMMON_FIELDS
-    
+
     specific_fields = [
+        FieldDefinition(
+            name="anio",
+            label="Año",
+            type="numeric",
+            description="Año del reporte de consumo de combustible"
+        ),
+        FieldDefinition(
+            name="tipo_documento",
+            label="Tipo de documento",
+            type="string",
+            description="Siempre 'reporte_combustible' para Cat-1"
+        ),
+        FieldDefinition(
+            name="tipo_combustible_clave",
+            label="Clave tipo de combustible",
+            type="string",
+            description="diesel_buses | gasolina_ecopais | gasolina_movil"
+        ),
+        FieldDefinition(
+            name="tipo_combustible_label",
+            label="Tipo de combustible",
+            type="string",
+            description="Nombre completo del tipo de combustible"
+        ),
+        FieldDefinition(
+            name="mes_numero",
+            label="Número de mes",
+            type="numeric",
+            description="Número del mes (1=enero … 12=diciembre)"
+        ),
+        FieldDefinition(
+            name="mes_nombre",
+            label="Nombre del mes",
+            type="string",
+            description="Nombre del mes en español (enero, febrero, …)"
+        ),
+        FieldDefinition(
+            name="total_usd",
+            label="Total USD del mes",
+            type="numeric",
+            unit="USD",
+            description="Suma de todos los vehículos del tipo en ese mes"
+        ),
+        FieldDefinition(
+            name="galones",
+            label="Galones del mes",
+            type="numeric",
+            unit="galones",
+            description="total_usd / precio_galon"
+        ),
+        FieldDefinition(
+            name="precio_galon",
+            label="Precio por galón",
+            type="numeric",
+            unit="USD/galón",
+            description="Precio del galón vigente al momento del cálculo"
+        ),
+        FieldDefinition(
+            name="precios_galon",
+            label="Precios por galón usados",
+            type="dict",
+            unit="USD/galón",
+            description="Precios vigentes al momento del cálculo: {diesel, gasolina_ecopais, gasolina_movil}"
+        ),
+        FieldDefinition(
+            name="extraction_success",
+            label="Extracción exitosa",
+            type="string",
+            description="True si la extracción fue exitosa"
+        ),
+        # ── Campos para facturas PDF individuales (otras zonas) ────────────
+        FieldDefinition(
+            name="nro_factura",
+            label="Número de factura",
+            type="string",
+            description="Número de factura individual de combustible"
+        ),
+        FieldDefinition(
+            name="descripcion",
+            label="Descripción del producto",
+            type="string",
+            description="Tipo de combustible según la factura: DIESEL PREMIUM, Extra, etc."
+        ),
+        FieldDefinition(
+            name="cantidad",
+            label="Cantidad (galones/litros)",
+            type="numeric",
+            unit="galones/litros",
+            description="Cantidad de combustible comprada (galones o litros según la factura)"
+        ),
         FieldDefinition(
             name="precio_unitario",
             label="Precio unitario",
             type="numeric",
             unit="USD",
-            patterns=[
-                r"\b(?:p\s*/\s*u|p\.?u\.?)\b\s*[:\-]?\s*\$?\s*([0-9][0-9\.,]*)",
-                r"precio\s+unitario\s*[:\-]?\s*\$?\s*([0-9][0-9\.,]*)",
-            ],
-            description="Precio unitario en dólares"
+            description="Precio por unidad (galón o litro) del combustible"
         ),
         FieldDefinition(
-            name="cantidad",
-            label="Cantidad",
-            type="numeric",
-            unit="Galones",
-            patterns=[
-                r"\bcant(?:idad)?\b\s*[:\-]?\s*([0-9][0-9\.,]*)",
-            ],
-            description="Cantidad en galones"
+            name="proveedor",
+            label="Proveedor",
+            type="string",
+            description="Nombre del proveedor de combustible (emisor de la factura)"
         ),
         FieldDefinition(
-            name="total",
-            label="Total",
+            name="subtotal",
+            label="Subtotal sin IVA",
             type="numeric",
             unit="USD",
-            patterns=[
-                r"valor\s+total\s*(?:\(usd\))?\s*[:\-]?\s*\$?\s*([0-9][0-9\.,]*)",
-                r"\btotal\b\s*[:\-]?\s*\$?\s*([0-9][0-9\.,]*)",
-            ],
-            description="Valor total en dólares"
+            description="Subtotal sin impuestos (precio del combustible antes del IVA)"
         ),
     ]
 
@@ -187,6 +265,13 @@ class Category2Schema(CategorySchema):
                 r"contador[:\s#]*([A-Z0-9\-]+)",
             ],
             description="Número de medidor/contador"
+        ),
+        FieldDefinition(
+            name="nombre_medidor",
+            label="Nombre del medidor",
+            type="string",
+            patterns=[],
+            description="Nombre del medidor según catálogo UTPL (asignado automáticamente por número de medidor)"
         ),
         FieldDefinition(
             name="consumo_total",
@@ -387,52 +472,73 @@ class Category2Schema(CategorySchema):
 
 
 # ══════════════════════════════════════════════════════════════
-# CATEGORÍA 3: Vuelos (Nota: origen Excel, fase 2)
+# CATEGORÍA 3: Vuelos
 # ══════════════════════════════════════════════════════════════
 
 class Category3Schema(CategorySchema):
-    """Categoría 3: Vuelos (nacional e internacional)."""
-    
+    """Categoría 3: Vuelos (nacionales e internacionales) desde Excel."""
+
     category_id = "cat-3"
     category_name = "Categoría 3 - Vuelos"
-    
+
     common_fields = COMMON_FIELDS
-    
+
     specific_fields = [
         FieldDefinition(
-            name="vuelos_domesticos_pasajeros",
-            label="Vuelos domésticos - Número de pasajeros",
+            name="anio",
+            label="Año",
             type="numeric",
-            unit="tickets",
-            description="Número de tickets/pasajeros en vuelos domésticos nacionales"
+            description="Año del reporte de vuelos"
         ),
         FieldDefinition(
-            name="vuelos_domesticos_distancia",
-            label="Vuelos domésticos - Distancia",
-            type="numeric",
-            unit="km",
-            description="Distancia total en km de vuelos domésticos"
+            name="tipo_documento",
+            label="Tipo de documento",
+            type="string",
+            description="Siempre 'vuelos' para Cat-3"
         ),
         FieldDefinition(
-            name="vuelos_internacionales_pasajeros",
-            label="Vuelos internacionales - Número de pasajeros",
-            type="numeric",
-            unit="tickets",
-            description="Número de tickets/pasajeros en vuelos internacionales"
+            name="tipo_vuelo",
+            label="Tipo de vuelo",
+            type="string",
+            description="'nacional' o 'internacional'"
         ),
         FieldDefinition(
-            name="vuelos_internacionales_distancia",
-            label="Vuelos internacionales - Distancia",
+            name="mes_numero",
+            label="Número de mes",
             type="numeric",
-            unit="km",
-            description="Distancia total en km de vuelos internacionales"
+            description="Número del mes (1=enero … 12=diciembre)"
         ),
         FieldDefinition(
-            name="perdidas_energia_cat2",
-            label="Pérdidas de energía reportada en CAT 2",
-            type="calculated",
-            unit="MWh",
-            description="Calculado con: (Consumo total MWh * 3,28%) / (1 - 3,28%)"
+            name="mes_nombre",
+            label="Nombre del mes",
+            type="string",
+            description="Nombre del mes en español (Enero, Febrero, …)"
+        ),
+        FieldDefinition(
+            name="km",
+            label="Pas×Km del mes",
+            type="numeric",
+            unit="pas×km",
+            description="Sumatoria de pas×km del tipo de vuelo en ese mes"
+        ),
+        FieldDefinition(
+            name="extraction_success",
+            label="Extracción exitosa",
+            type="string",
+            description="True si la extracción fue exitosa"
+        ),
+        # Campos intermedios del extractor (no se guardan en Firestore)
+        FieldDefinition(
+            name="km_nacional_por_mes",
+            label="Km nacionales por mes (intermedio)",
+            type="dict",
+            description="Usado internamente por la ruta para generar documentos por mes"
+        ),
+        FieldDefinition(
+            name="km_internacional_por_mes",
+            label="Km internacionales por mes (intermedio)",
+            type="dict",
+            description="Usado internamente por la ruta para generar documentos por mes"
         ),
     ]
 
@@ -535,6 +641,52 @@ class Category4Schema(CategorySchema):
                 r"aguas?\s+residuales?.*inodoros?\s*[:\s]*(\d+[\.,]?\d*)",
             ],
             description="Volumen de aguas residuales descargadas"
+        ),
+        # ── Pernoctación en hoteles (Excel) ────────────────────
+        FieldDefinition(
+            name="tipo_documento",
+            label="Tipo de documento",
+            type="string",
+            description="'agua', 'papel_bond' o 'hospedaje'"
+        ),
+        FieldDefinition(
+            name="proveedor",
+            label="Razón social del proveedor",
+            type="string",
+            description="Nombre del proveedor de hospedaje (ej. ZARPECA S.A.)"
+        ),
+        FieldDefinition(
+            name="noches_por_mes",
+            label="Noches por mes",
+            type="dict",
+            unit="noches",
+            description="Mapa mes-nombre → total noches (ej. {'ENERO': 11, 'FEBRERO': 8})"
+        ),
+        FieldDefinition(
+            name="noches_por_mes_numero",
+            label="Noches por mes (número)",
+            type="dict",
+            unit="noches",
+            description="Mapa número-de-mes → total noches (ej. {'1': 11, '2': 8})"
+        ),
+        FieldDefinition(
+            name="total_noches",
+            label="Total noches anuales",
+            type="numeric",
+            unit="noches",
+            description="Suma de noches de hospedaje en todos los meses"
+        ),
+        FieldDefinition(
+            name="detalle_registros",
+            label="Detalle de registros",
+            type="list",
+            description="Lista de filas con mes, fechas y noches calculadas"
+        ),
+        FieldDefinition(
+            name="total_registros",
+            label="Total de registros",
+            type="numeric",
+            description="Cantidad de filas procesadas del Excel"
         ),
     ]
 

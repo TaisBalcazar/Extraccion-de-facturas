@@ -1,6 +1,9 @@
 import os
 from pathlib import Path
 from dataclasses import dataclass
+from dotenv import load_dotenv
+
+load_dotenv()  # ← carga el .env ANTES de os.getenv()
 
 
 @dataclass
@@ -8,7 +11,7 @@ class Settings:
     app_env: str = os.getenv("APP_ENV", "development")
     allowed_origins_raw: str = os.getenv("ALLOWED_ORIGINS", "http://localhost:4200")
     firebase_credentials_path_raw: str = os.getenv("FIREBASE_CREDENTIALS_PATH", "")
-    
+
     # Firebase credentials from environment variables
     firebase_project_id: str = os.getenv("FIREBASE_PROJECT_ID", "")
     firebase_private_key_id: str = os.getenv("FIREBASE_PRIVATE_KEY_ID", "")
@@ -33,30 +36,30 @@ class Settings:
         candidates = []
 
         if self.firebase_credentials_path_raw:
-            candidates.append(Path(self.firebase_credentials_path_raw))
+            # Soportar rutas absolutas y relativas
+            p = Path(self.firebase_credentials_path_raw)
+            candidates.append(p)
 
-        candidates.extend(
-            [
-                self.project_root / "firebase-config.json",
-                self.project_root / "utpl-sostenible-firebase-adminsdk-fbsvc-7a7506e60e.json",
-                self.project_root / "backend" / "firebase-config.json",
-            ]
-        )
+        candidates.extend([
+            self.project_root / "firebase-config.json",
+            self.project_root / "backend" / "firebase-config.json",
+        ])
 
         for candidate in candidates:
             if candidate.exists():
+                print(f"🔑 Credenciales Firebase encontradas: {candidate}")
                 return candidate
 
+        print(f"⚠️  No se encontró archivo de credenciales. Path configurado: '{self.firebase_credentials_path_raw}'")
         return None
-    
+
     @property
     def firebase_credentials_dict(self) -> dict:
-        """Construir diccionario de credenciales de Firebase desde variables de entorno."""
         return {
             "type": "service_account",
             "project_id": self.firebase_project_id,
             "private_key_id": self.firebase_private_key_id,
-            "private_key": self.firebase_private_key.replace(r"\n", "\n"),
+            "private_key": self.firebase_private_key.replace("\\n", "\n"),
             "client_email": self.firebase_client_email,
             "client_id": self.firebase_client_id,
             "auth_uri": self.firebase_auth_uri,

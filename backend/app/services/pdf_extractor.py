@@ -58,11 +58,17 @@ class PDFExtractor:
         return self._pdf_cache
     
     def _extract_text(self) -> None:
-        """Extrae y cachea el texto completo del PDF."""
+        """Extrae y cachea el texto del PDF; usa OCR si el PDF está escaneado."""
         try:
             texto = ""
             for page in self.pdf_doc.pages:
                 texto += page.extract_text() or ""
+
+            from app.services.ocr_extractor import extract_text_smart
+            texto, ocr_usado = extract_text_smart(self._content, texto)
+            if ocr_usado:
+                print(f"📷 OCR aplicado en '{self._filename}'")
+
             self._text_cache = texto
         except Exception as e:
             print(f"❌ Error extrayendo texto PDF: {e}")
