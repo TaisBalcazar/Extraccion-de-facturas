@@ -8,10 +8,23 @@ from pydantic import BaseModel, Field
 
 from google.cloud.firestore import ArrayUnion, ArrayRemove
 
+from app.core.config import settings
 from app.core.firebase import get_firestore_client
 from app.core.security import get_current_user
 
 router = APIRouter()
+
+
+def _filtrar_categorias_habilitadas(categorias: list[dict]) -> list[dict]:
+    """
+    Despliegue temporal Producto 1 (CarbonTrack UTPL): si ENABLED_CATEGORIES está
+    configurado (ver app/core/config.py), solo se devuelven esas categorías.
+    Sin configurar (default) = sin restricción, se devuelven todas.
+    """
+    habilitadas = settings.enabled_categories
+    if not habilitadas:
+        return categorias
+    return [c for c in categorias if c.get("id") in habilitadas]
 
 
 # =========================
@@ -79,6 +92,7 @@ def get_catalogos(user: dict = Depends(get_current_user)) -> dict:
 
     zonas.sort(key=lambda z: (z.get("numero") is None, z.get("numero") or 0, str(z.get("nombre") or "")))
     categorias.sort(key=lambda c: (c.get("numero") is None, c.get("numero") or 0, str(c.get("nombre") or "")))
+    categorias = _filtrar_categorias_habilitadas(categorias)
 
     return {"zonas": zonas, "categorias": categorias}
 
@@ -99,6 +113,8 @@ def list_zonas(user: dict = Depends(get_current_user)) -> list[dict]:
 
 @router.put("/zonas/{zona_id}")
 def update_zona(zona_id: str, payload: ZonaIn, user: dict = Depends(get_current_user)) -> dict:
+    _require_admin(user)
+
     db = get_firestore_client()
     ref = db.collection("zonas").document(zona_id)
     snap = ref.get()
@@ -170,12 +186,15 @@ def list_categorias(user: dict = Depends(get_current_user)) -> list[dict]:
 
     categorias = [{"id": d.id, **(d.to_dict() or {})} for d in docs]
     categorias.sort(key=lambda c: (c.get("numero") is None, c.get("numero") or 0, str(c.get("nombre") or "")))
+    categorias = _filtrar_categorias_habilitadas(categorias)
 
     return categorias
 
 
 @router.put("/categorias/{categoria_id}")
 def update_categoria(categoria_id: str, payload: CategoriaIn, user: dict = Depends(get_current_user)) -> dict:
+    _require_admin(user)
+
     db = get_firestore_client()
     ref = db.collection("categorias").document(categoria_id)
     snap = ref.get()

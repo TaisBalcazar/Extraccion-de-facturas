@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.schemas import Category1Schema
 from app.services.extractors.base import BaseCategoryExtractor
+from app.services.ocr_extractor import OCRNotAvailableError
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -448,7 +449,7 @@ class Category1Extractor(BaseCategoryExtractor):
         datos = self.initialize_data_dict()
         datos.update({
             "filename": filename,
-            "anio": anio,
+            "year": anio,
             "tipo_documento": "reporte_combustible",
             "grupos": grupos,
             "precios_galon": dict(self.precios),
@@ -462,6 +463,8 @@ class Category1Extractor(BaseCategoryExtractor):
         """Extrae datos de una factura PDF individual de combustible."""
         try:
             texto = self.extract_pdf_text(file_content)
+        except OCRNotAvailableError:
+            raise
         except Exception as exc:
             return self.create_error_response(f"Error al leer el PDF: {exc}")
 

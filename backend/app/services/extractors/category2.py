@@ -13,6 +13,8 @@ import pdfplumber
 
 from app.services.schemas import Category2Schema
 from app.services.extractors.base import BaseCategoryExtractor
+from app.services.ocr_extractor import OCRNotAvailableError
+from app.utils.validaciones import es_razon_social_valida
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -138,6 +140,10 @@ class Category2Extractor(BaseCategoryExtractor):
         for line in lines:
             line_lower = line.lower()
             if "consumo" not in line_lower and "kwh" not in line_lower:
+                continue
+
+            # Evitar líneas de metadatos que contienen "tipo de consumo" (no es consumo energético).
+            if "tipo" in line_lower and "consumo" in line_lower:
                 continue
 
             # Evitar capturar líneas monetarias.
@@ -343,6 +349,15 @@ class Category2Extractor(BaseCategoryExtractor):
                                         continue
 
                                 consumo_total = self._to_float(raw_values[consumo_total_idx])
+
+                                descripcion = ""
+                                if descripcion_idx is not None and descripcion_idx < len(raw_values):
+                                    descripcion = self._normalize_header_cell(raw_values[descripcion_idx])
+
+                                # Fila "energía activa total" es autoritativa, incluso con consumo 0.
+                                if "energiaactivatotal" in descripcion:
+                                    return consumo_total if consumo_total is not None else 0.0
+
                                 if consumo_total is None or consumo_total <= 0:
                                     continue
 
@@ -354,21 +369,13 @@ class Category2Extractor(BaseCategoryExtractor):
                                     # Si algo sale invertido por OCR, usar el mayor entre ambos.
                                     consumo_total = max(consumo_total, consumo_subtotal)
 
-                                descripcion = ""
-                                if descripcion_idx is not None and descripcion_idx < len(raw_values):
-                                    descripcion = self._normalize_header_cell(raw_values[descripcion_idx])
-
-                                # Priorizar fila "energía activa total" si existe.
-                                if "energiaactivatotal" in descripcion:
-                                    return consumo_total
-
                                 if best_consumo is None or consumo_total > best_consumo:
                                     best_consumo = consumo_total
 
                             if best_consumo is not None:
                                 return best_consumo
         except Exception as exc:
-            print(f"⚠️ [CAT2 EXTRACTOR] Error leyendo tablas para consumo_total: {exc}")
+            print(f"[CAT2 EXTRACTOR] Error leyendo tablas para consumo_total: {exc}")
 
         return None
 
@@ -390,9 +397,9 @@ class Category2Extractor(BaseCategoryExtractor):
         Busca medidor, consumo en kWh, lecturas, subtotales, IVA, etc.
         """
         try:
-            print(f"📖 [CAT2 EXTRACTOR] Leyendo PDF: {filename}")
+            print(f"[CAT2 EXTRACTOR] Leyendo PDF: {filename}")
             texto_completo = self.extract_pdf_text(file_content)
-            print(f"📖 [CAT2 EXTRACTOR] Texto extraído: {len(texto_completo)} caracteres")
+            print(f"[CAT2 EXTRACTOR] Texto extraído: {len(texto_completo)} caracteres")
             
             datos = self.initialize_data_dict()
             datos["filename"] = filename
@@ -404,6 +411,7 @@ class Category2Extractor(BaseCategoryExtractor):
                 [
                     r"c[óo]digo\s+[úu]nico\s+el[ée]ctrico\s*[:\-]?\s*([A-Z0-9\-]+)",
                     r"cod\.?\s*[úu]nico\s*[:\-]?\s*([A-Z0-9\-]+)",
+                    r"c[óo]digo\s+[úu]nico\s*[:\-]?\s*(\d{5,})",
                 ],
             )
 
@@ -439,23 +447,15 @@ class Category2Extractor(BaseCategoryExtractor):
             # Nombre del medidor: asignado automáticamente desde catálogo UTPL
             datos["nombre_medidor"] = self._lookup_nombre_medidor(datos.get("medidor"))
 
-            # Razón Social
-            datos["razon_social"] = None
+            # Razón Social — solo validar, nunca guardar en Firestore
             match_rs = re.search(
                 r"raz[óo]n\s+social\s*[:\-]?\s*(.+?)(?:\n|ruc|$)",
                 texto_completo, re.IGNORECASE
             )
             if match_rs:
-                datos["razon_social"] = match_rs.group(1).strip()
-
-            # Tipo de tarifa ARCONEL
-            datos["tipo_tarifa"] = None
-            match_tarifa = re.search(
-                r"tipo\s+de\s+tarifa\s+arconel\s*[:\-]?\s*(.+?)(?:\n|geocod|$)",
-                texto_completo, re.IGNORECASE
-            )
-            if match_tarifa:
-                datos["tipo_tarifa"] = match_tarifa.group(1).strip()
+                razon_social_raw = match_rs.group(1).strip()
+                if not es_razon_social_valida(razon_social_raw):
+                    print(f"[CAT2 EXTRACTOR] Razón social no reconocida: {razon_social_raw!r}")
 
             # Dirección / Ubicación del servicio
             datos["direccion_servicio"] = None
@@ -466,14 +466,15 @@ class Category2Extractor(BaseCategoryExtractor):
             if match_dir:
                 datos["direccion_servicio"] = match_dir.group(1).strip()
 
-            # Días facturados
-            datos["dias_facturados"] = self._extract_float_from_patterns(
+            # Días facturados — int
+            _dias_float = self._extract_float_from_patterns(
                 texto_completo,
                 [
                     r"d[íi]as\s+facturados\s*[:\-]?\s*([0-9]+)",
                     r"facturados\s*[:\-]?\s*([0-9]+)",
                 ],
             )
+            datos["dias_facturados"] = int(_dias_float) if _dias_float is not None else None
 
             # Fechas: emisión, periodo inicio y fin.
             # OCR escaneado puede poner la etiqueta y la fecha en líneas distintas,
@@ -498,7 +499,7 @@ class Category2Extractor(BaseCategoryExtractor):
                 # Derivar año y mes del período
                 partes = re.split(r"[-/]", datos["periodo_inicio"])
                 if len(partes) == 3:
-                    datos["anio"] = int(partes[2])
+                    datos["year"] = int(partes[2])
                     datos["mes_numero"] = int(partes[1])
                     meses = {1:"Enero",2:"Febrero",3:"Marzo",4:"Abril",5:"Mayo",6:"Junio",
                              7:"Julio",8:"Agosto",9:"Septiembre",10:"Octubre",11:"Noviembre",12:"Diciembre"}
@@ -604,16 +605,13 @@ class Category2Extractor(BaseCategoryExtractor):
                     )
                     datos["consumo_total"] = corregido
 
-            # Compatibilidad para consumidores que aún leen consumo_kwh.
-            if datos.get("consumo_total") is not None:
-                datos["consumo_kwh"] = datos["consumo_total"]
-            else:
+            if datos.get("consumo_total") is None:
                 # Log de diagnóstico para casos donde el PDF trae formato no contemplado.
                 lineas_consumo = [
                     line.strip() for line in texto_completo.splitlines()
                     if line and ("consumo" in line.lower() or "kwh" in line.lower())
                 ]
-                print(f"⚠️ [CAT2 EXTRACTOR] consumo_total no detectado. Líneas candidatas: {lineas_consumo[:6]}")
+                print(f"[CAT2 EXTRACTOR] consumo_total no detectado. Líneas candidatas: {lineas_consumo[:6]}")
             datos["total_sec_elec"] = self._extract_float_from_patterns(
                 texto_completo,
                 [
@@ -666,19 +664,10 @@ class Category2Extractor(BaseCategoryExtractor):
                 [
                     r"servicio\s+alumbrado\s+p[úu]blico\s+general\s*[:\-]?\s*\$?\s*([0-9][0-9\.,]*)",
                     r"alumbrado\s+p[úu]blico\s+general\s*[:\-]?\s*\$?\s*([0-9][0-9\.,]*)",
+                    r"servicio\s+alumbrado\s+p[úu]blico\s*[:\-]?\s*\$?\s*([0-9][0-9\.,]*)",
+                    r"(?<!\w)alumbrado\s+p[úu]blico\s*[:\-]?\s*\$?\s*([0-9][0-9\.,]*)",
                 ],
             )
-
-            # Valor forma de pago (sector eléctrico)
-            datos["valor_forma_pago"] = self._extract_float_from_patterns(
-                texto_completo,
-                [
-                    r"otros\s+con\s+utilizaci[óo]n\s+del\s+sistema\s+financiero\s*[:\-]?\s*\$?\s*([0-9][0-9\.,]*)",
-                    r"forma\s+de\s+pago\s*[:\-]?\s*\$?\s*([0-9][0-9\.,]*)",
-                ],
-            )
-            if datos["valor_forma_pago"] is None:
-                datos["valor_forma_pago"] = datos.get("total_sec_elec")
 
             datos["valor_total"] = self._extract_float_from_patterns(
                 texto_completo,
@@ -691,9 +680,11 @@ class Category2Extractor(BaseCategoryExtractor):
             datos["extraction_success"] = True
             datos["texto_completo"] = texto_completo[:500]
             
-            print(f"✅ [CAT2 EXTRACTOR] Extracción exitosa")
+            print(f"[CAT2 EXTRACTOR] Extracción exitosa")
             return datos
-        
+
+        except OCRNotAvailableError:
+            raise
         except Exception as exc:
-            print(f"❌ [CAT2 EXTRACTOR] Error: {exc}")
+            print(f"[CAT2 EXTRACTOR] Error: {exc}")
             return self.create_error_response(str(exc))

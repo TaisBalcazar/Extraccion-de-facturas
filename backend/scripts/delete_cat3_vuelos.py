@@ -27,6 +27,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.core.firebase import get_firestore_client  # noqa: E402
+from app.services.resumen_service import reconstruir_resumen  # noqa: E402
 
 
 DEFAULT_COLLECTION = "facturas"
@@ -138,11 +139,16 @@ def main() -> int:
         print("No hay documentos para eliminar.")
         return 0
 
-    print(f"\n⚠️  Estás a punto de eliminar {len(targets)} documento(s) de forma permanente.")
+    print(f"\n Estás a punto de eliminar {len(targets)} documento(s) de forma permanente.")
     confirm = input("Escribe BORRAR para confirmar la eliminación definitiva: ").strip()
     if confirm != "BORRAR":
         print("Operación cancelada.")
         return 1
+
+    owner_uids_afectados = {
+        (doc.to_dict() or {}).get("owner_uid") for doc in targets
+    }
+    owner_uids_afectados.discard(None)
 
     deleted = 0
     batch = db.batch()
@@ -161,7 +167,12 @@ def main() -> int:
     if pending:
         batch.commit()
 
-    print(f"✅ Eliminados {deleted} documento(s) de vuelos.")
+    for uid in owner_uids_afectados:
+        print(f"\n[RESUMEN] Reconstruyendo resumenes/{uid}...")
+        reconstruir_resumen(db, uid)
+        print("[RESUMEN] OK")
+
+    print(f"Eliminados {deleted} documento(s) de vuelos.")
     return 0
 
 

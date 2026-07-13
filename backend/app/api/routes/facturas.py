@@ -1,6 +1,8 @@
 from datetime import datetime
 import hashlib
+import logging
 import unicodedata
+import uuid
 from typing import Optional, Tuple
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -9,44 +11,37 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from app.core.firebase import get_firestore_client
 from app.core.security import get_current_user
-from app.services.chat_logic import MESES, detectar_filtros
+from app.api.routes.catalogos import _require_admin
 from app.services.factura_extractor import extraer_datos_factura
 from app.services.resumen_service import actualizar_resumen
 from app.services.pdf_extractor import PDFExtractor
 from app.services.regex_patterns import RegexPatternLibrary
+from app.services.ocr_extractor import OCRNotAvailableError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-# ══════════════════════════════════════════════════════════════
-# Campos canónicos de una factura
-# Fuente única de verdad: usada en upload, listado y serialización.
-# ══════════════════════════════════════════════════════════════
+def _log_error_interno(exc: Exception, contexto: str, **detalle) -> str:
+    """Genera un error_id, loguea el detalle completo (con traceback) en el
+    servidor y devuelve el error_id para incluirlo en la respuesta genérica
+    que sí ve el cliente."""
+    error_id = uuid.uuid4().hex
+    logger.error(
+        "%s [%s] %s", contexto, error_id, detalle or "",
+        exc_info=exc,
+    )
+    return error_id
 
-FACTURA_FIELDS = [
-    "filename", "upload_date", "zona_id", "zona_nombre",
-    "centro", "categoria_id", "categoria_nombre", "item",
-    # Categoría 1
-    "factura_numero", "precio_unitario", "cantidad", "iva", "total",
-    # Categoría 2
-    "cod_unico", "nro_factura", "fecha_emision", "medidor",
-    "consumo_total", "total_sec_elec", "contribucion_bomberos", "valor_total",
-    "razon_social", "tipo_tarifa", "direccion_servicio", "dias_facturados",
-    "anio", "mes_numero", "mes_nombre", "valor_consumo", "subsidio_tarifa",
-    "comercializacion", "alumbrado_publico", "valor_forma_pago",
-    "lectura_anterior", "lectura_actual", "diferencia_consumo",
-    "consumo_subtotal", "consumo_interno_transformador", "consumo_kwh",
-    "periodo_inicio", "periodo_fin",
-    # Categoría 4 — Agua
-    "tipo_documento", "consumo_m3",
-    # Categoría 4 — Papel Bond
-    "total_resmas_anual", "peso_papel_kg_anual", "peso_papel_ton_anual",
-    # Categoría 4 - Hospedaje (pernoctación en hoteles)
-    "proveedor", "noches_por_mes", "noches_por_mes_numero",
-    "total_noches", "detalle_registros", "total_registros",
-    # Categoría 5
-    "periodos", "horas_trabajadas_bimestre1", "horas_trabajadas_bimestre2",
-]
+
+def _http_error_interno(exc: Exception, contexto: str, mensaje_publico: str, **detalle) -> HTTPException:
+    error_id = _log_error_interno(exc, contexto, **detalle)
+    return HTTPException(
+        status_code=500,
+        detail=f"{mensaje_publico}. Código de referencia: {error_id}",
+    )
+
 
 # Campos exactos permitidos por categoría (sin relleno con null).
 _CATEGORY_ALLOWED_FIELDS = {
@@ -63,39 +58,34 @@ _CATEGORY_ALLOWED_FIELDS = {
         "nro_factura",
         "fecha_emision",
         "medidor",
+        "nombre_medidor",
         "consumo_total",
-        "total_sec_elec",
         "contribucion_bomberos",
         "valor_total",
-        "razon_social",
-        "tipo_tarifa",
         "direccion_servicio",
         "dias_facturados",
-        "anio",
         "mes_numero",
         "mes_nombre",
         "valor_consumo",
         "subsidio_tarifa",
         "comercializacion",
         "alumbrado_publico",
-        "valor_forma_pago",
         "lectura_anterior",
         "lectura_actual",
         "diferencia_consumo",
         "consumo_subtotal",
         "consumo_interno_transformador",
-        "consumo_kwh",
         "periodo_inicio",
         "periodo_fin",
     },
     "cat-4": {
         # Agua (Municipio de Loja) — un doc por factura
-        "tipo_documento", "anio", "mes_numero", "mes_nombre",
+        "factura_numero", "fecha_emision", "mes_numero", "mes_nombre",
         "consumo_m3", "agua_potable", "alcantarillado",
         "aportes_planes_maestros", "seguridad_ciudadana",
         "proteccion_microcuencas", "costo_basico_facturacion",
         "recoleccion_basura", "interes_recargo", "total_facturado",
-        "medidor", "categoria", "ubicacion",
+        "medidor", "estado_medidor", "categoria", "ubicacion",
         "lectura_anterior", "lectura_actual",
         # Papel Bond — un doc por año
         "total_resmas_anual", "peso_papel_kg_anual", "peso_papel_ton_anual", "periodos",
@@ -117,18 +107,6 @@ _CATEGORY_ALLOWED_FIELDS = {
 # Campos que NO provienen de la extracción (se generan al guardar)
 _CAMPOS_INTERNOS = {"filename", "upload_date"}
 
-
-# ══════════════════════════════════════════════════════════════
-# Mapa para el endpoint /chat
-# Cada entrada: tupla de keywords → (campo_firestore, etiqueta_humana)
-# ══════════════════════════════════════════════════════════════
-
-CHAT_CAMPO_MAP: list[tuple[tuple[str, ...], tuple[str, str]]] = [
-    (
-        ("bomberos", "contribucion", "contribución"),
-        ("contribucion_bomberos", "contribución a bomberos"),
-    ),
-]
 
 # Categorías que aceptan Excel además de PDF.
 _CATEGORIAS_EXCEL: set[str] = {"cat-1", "cat-3", "cat-4"}
@@ -215,17 +193,24 @@ def _validar_razon_social_desde_extractor(pdf_extractor: PDFExtractor) -> Tuple[
     """
     try:
         texto_pdf = pdf_extractor.extract_text()
+    except OCRNotAvailableError:
+        raise
     except Exception as exc:
-        return False, None, f"No se pudo leer el PDF para validar razón social: {exc}"
+        error_id = _log_error_interno(exc, "Error leyendo PDF para validar razón social")
+        return (
+            False,
+            None,
+            f"No se pudo leer el PDF para validar razón social. Código de referencia: {error_id}",
+        )
 
-    print(f"🔍 [RAZON SOCIAL] Texto extraído ({len(texto_pdf)} chars): {repr(texto_pdf[:300])}")
+    print(f"[RAZON SOCIAL] Texto extraído ({len(texto_pdf)} chars): {repr(texto_pdf[:300])}")
 
     if not texto_pdf or len(texto_pdf.strip()) < 20:
         return (
             False,
             None,
-            "El PDF parece estar escaneado (imagen sin texto) y no hay OCR disponible en el servidor. "
-            "Instala EasyOCR ejecutando: pip install easyocr",
+            "No se pudo extraer texto del PDF. El archivo puede estar escaneado con muy baja calidad, "
+            "ser ilegible o estar dañado. Verifica que el PDF sea legible e intenta nuevamente.",
         )
 
     razon_detectada = _extraer_razon_social_desde_texto(texto_pdf)
@@ -317,21 +302,28 @@ def _datos_to_doc(
     doc["upload_date"] = datetime.now().isoformat()
     doc["owner_uid"] = uid
     doc["owner_email"] = email
-    if datos.get("razon_social"):
-        doc["razon_social"] = datos["razon_social"]
-
     # Campos denormalizados de asociación (zona, categoría, item)
     doc.update(asociacion)
 
-    # Campo para filtrado eficiente en Firestore (evita str-contains en Python)
+    # Campo para filtrado eficiente en Firestore (evita str-contains en Python).
+    # fecha_emision puede venir como YYYY-MM-DD (cat-1, cat-3) o DD-MM-YYYY (cat-2, cat-4).
     fecha = datos.get("fecha_emision") or ""
     doc["year"] = int(fecha[:4]) if len(fecha) >= 4 and fecha[:4].isdigit() else None
-    # Cat-3 hospedaje no tiene fecha_emision; usar campo anio del Excel
+    # Fallback 1: el extractor ya calculó datos["year"] (cat-2 lo deriva de periodo_inicio)
+    if doc["year"] is None and datos.get("year"):
+        try:
+            doc["year"] = int(datos["year"])
+        except (TypeError, ValueError):
+            pass
+    # Fallback 2: cat-3 hospedaje usa campo anio del Excel
     if doc["year"] is None and datos.get("anio"):
         try:
             doc["year"] = int(datos["anio"])
         except (TypeError, ValueError):
             pass
+    # Fallback 3: formato DD-MM-YYYY (cat-4 agua) → últimos 4 dígitos de fecha_emision
+    if doc["year"] is None and len(fecha) >= 4 and fecha[-4:].isdigit():
+        doc["year"] = int(fecha[-4:])
     
     # Hash único para detección de duplicados (OPTIMIZACIÓN)
     factura_numero = datos.get("factura_numero") or datos.get("nro_factura")
@@ -457,7 +449,7 @@ def _obtener_precios_combustible(db) -> dict:
                 if k in data and isinstance(data[k], (int, float))
             } | {k: v for k, v in PRECIOS_COMBUSTIBLE_DEFAULT.items() if k not in data}
     except Exception as exc:
-        print(f"⚠️ [PRECIOS] Error leyendo config, usando defaults: {exc}")
+        print(f"[PRECIOS] Error leyendo config, usando defaults: {exc}")
     return dict(PRECIOS_COMBUSTIBLE_DEFAULT)
 
 
@@ -489,7 +481,7 @@ def _buscar_combustible_existente(
             ):
                 return doc.id, data
     except Exception as exc:
-        print(f"⚠️ [CAT1 MERGE] Error buscando reporte existente: {exc}")
+        print(f"[CAT1 MERGE] Error buscando reporte existente: {exc}")
     return None
 
 
@@ -519,7 +511,7 @@ def _buscar_hospedaje_existente(
             ):
                 return doc.id, data
     except Exception as exc:
-        print(f"⚠️ [CAT4 HOSPEDAJE MERGE] Error buscando registro existente: {exc}")
+        print(f"[CAT4 HOSPEDAJE MERGE] Error buscando registro existente: {exc}")
     return None
 
 
@@ -551,7 +543,7 @@ def _buscar_vuelo_existente(
             ):
                 return doc.id, data
     except Exception as exc:
-        print(f"⚠️ [CAT3 VUELOS] Error buscando registro existente: {exc}")
+        print(f"[CAT3 VUELOS] Error buscando registro existente: {exc}")
     return None
 
 
@@ -585,7 +577,7 @@ def _buscar_vuelo_ruta_existente(
             ):
                 return doc.id, data
     except Exception as exc:
-        print(f"⚠️ [CAT3 RUTA] Error buscando registro existente: {exc}")
+        print(f"[CAT3 RUTA] Error buscando registro existente: {exc}")
     return None
 
 
@@ -623,7 +615,7 @@ def _buscar_papel_bond_existente(
             ):
                 return doc.id, data
     except Exception as exc:
-        print(f"⚠️ [BOND MERGE] Error al buscar documento existente: {exc}")
+        print(f"[BOND MERGE] Error al buscar documento existente: {exc}")
     return None
 
 
@@ -690,13 +682,6 @@ def _obtener_facturas_filtradas(
     return facturas
 
 
-def _respuesta_campo(facturas: list, campo: str, label: str) -> str:
-    """Genera la respuesta de texto para una consulta de chat sobre un campo numérico."""
-    total = sum(f.get(campo, 0) or 0 for f in facturas)
-    cantidad = sum(1 for f in facturas if f.get(campo))
-    return f"Se gastaron ${total:.2f} USD en {label} en {cantidad} factura(s)."
-
-
 def _monto_factura(data: dict) -> float:
     """Obtiene el monto de una factura usando campos disponibles por categoría."""
     return float(
@@ -711,14 +696,6 @@ def _monto_factura(data: dict) -> float:
 def _consumo_factura(data: dict) -> float:
     """Obtiene el consumo de una factura usando campos disponibles por categoría."""
     return float(data.get("consumo_kwh") or data.get("consumo_total") or 0)
-
-
-# ══════════════════════════════════════════════════════════════
-# Modelos
-# ══════════════════════════════════════════════════════════════
-
-class ChatRequest(BaseModel):
-    message: str
 
 
 # ══════════════════════════════════════════════════════════════
@@ -746,14 +723,14 @@ def listar_facturas(
         if medidor:
             facturas = [f for f in facturas if f.get("medidor") == medidor]
 
-        # Serializar con FACTURA_FIELDS y ordenar
         result = [_doc_to_dict(f.get("__id__", ""), f) for f in facturas]
         result.sort(key=lambda x: str(x.get("upload_date") or ""), reverse=True)
         return result
 
     except Exception as exc:
-        raise HTTPException(
-            status_code=500, detail=f"Error al listar facturas: {exc}"
+        raise _http_error_interno(
+            exc, "Error al listar facturas", "Error al listar las facturas",
+            uid=user.get("uid"),
         ) from exc
 
 
@@ -782,7 +759,7 @@ async def upload_file(
 
     for file in files:
         filename = file.filename or ""
-        print(f"📄 [UPLOAD] Procesando: {filename}")
+        print(f"[UPLOAD] Procesando: {filename}")
 
         es_excel = filename.lower().endswith((".xlsx", ".xls"))
         es_pdf = filename.lower().endswith(".pdf")
@@ -797,7 +774,7 @@ async def upload_file(
 
         try:
             content = await file.read()
-            print(f"📥 [UPLOAD] {filename} — {len(content)} bytes")
+            print(f"[UPLOAD] {filename} — {len(content)} bytes")
 
             razon_social_detectada = None
 
@@ -815,7 +792,7 @@ async def upload_file(
                     pdf_extractor.close()
 
                 if requiere_razon_social and not es_razon_social_valida:
-                    print(f"🚫 [UPLOAD] Rechazada por razón social: {filename} | {alerta_razon_social}")
+                    print(f"[UPLOAD] Rechazada por razón social: {filename} | {alerta_razon_social}")
                     errores.append({
                         "filename": filename,
                         "error": alerta_razon_social,
@@ -840,7 +817,7 @@ async def upload_file(
                             ),
                         })
                         continue
-                    print(f"📊 [UPLOAD] Excel combustible cat-1: {filename}")
+                    print(f"[UPLOAD] Excel combustible cat-1: {filename}")
                     from app.services.extractors.category1 import Category1Extractor
                     precios = _obtener_precios_combustible(db)
                     datos_completos = Category1Extractor(precios=precios).extract(content, filename)
@@ -902,7 +879,7 @@ async def upload_file(
                             if existente_comb:
                                 doc_id_comb, _ = existente_comb
                                 db.collection("facturas").document(doc_id_comb).set(doc_data_mes)
-                                print(f"🔄 [CAT1] {clave_grupo} {anio_comb}/{mes['mes_nombre']} actualizado: {doc_id_comb}")
+                                print(f"[CAT1] {clave_grupo} {anio_comb}/{mes['mes_nombre']} actualizado: {doc_id_comb}")
                                 resultados.append({"filename": filename, "id": doc_id_comb,
                                     "zona_id": asociacion["zona_id"], "centro": asociacion["centro"],
                                     "categoria_id": asociacion["categoria_id"], "item": item_canonico,
@@ -916,8 +893,8 @@ async def upload_file(
                                 try:
                                     actualizar_resumen(db, user["uid"], doc_data_mes, signo=1)
                                 except Exception as exc_res:
-                                    print(f"⚠️ [RESUMEN] {exc_res}")
-                                print(f"💾 [CAT1] {clave_grupo} {anio_comb}/{mes['mes_nombre']} guardado: {doc_id_comb}")
+                                    print(f"[RESUMEN] {exc_res}")
+                                print(f"[CAT1] {clave_grupo} {anio_comb}/{mes['mes_nombre']} guardado: {doc_id_comb}")
                                 resultados.append({"filename": filename, "id": doc_id_comb,
                                     "zona_id": asociacion["zona_id"], "centro": asociacion["centro"],
                                     "categoria_id": asociacion["categoria_id"], "item": item_canonico,
@@ -928,7 +905,7 @@ async def upload_file(
 
                 # ── Cat-3 Excel: vuelos (un documento por ruta × mes) ────────
                 if asociacion.get("categoria_id") == "cat-3":
-                    print(f"✈️  [UPLOAD] Excel vuelos cat-3: {filename}")
+                    print(f"[UPLOAD] Excel vuelos cat-3: {filename}")
                     from app.services.extractors.category3 import Category3Extractor
                     datos_vuelos = Category3Extractor().extract(content, filename)
 
@@ -993,7 +970,7 @@ async def upload_file(
                         if existente_ruta:
                             doc_id_ruta, _ = existente_ruta
                             db.collection("facturas").document(doc_id_ruta).set(doc_data_ruta)
-                            print(f"🔄 [CAT3] {ruta_str} {mes_nom_r} actualizado: {doc_id_ruta}")
+                            print(f"[CAT3] {ruta_str} {mes_nom_r} actualizado: {doc_id_ruta}")
                             resultados.append({
                                 "filename": filename, "id": doc_id_ruta,
                                 "zona_id": asociacion["zona_id"], "centro": asociacion["centro"],
@@ -1007,8 +984,8 @@ async def upload_file(
                             try:
                                 actualizar_resumen(db, user["uid"], doc_data_ruta, signo=1)
                             except Exception as exc_res:
-                                print(f"⚠️ [RESUMEN] {exc_res}")
-                            print(f"💾 [CAT3] {ruta_str} {mes_nom_r}: {entrada_ruta['cantidad']}x {entrada_ruta['km_por_viaje']} km → {doc_id_ruta}")
+                                print(f"[RESUMEN] {exc_res}")
+                            print(f"[CAT3] {ruta_str} {mes_nom_r}: {entrada_ruta['cantidad']}x {entrada_ruta['km_por_viaje']} km -> {doc_id_ruta}")
                             resultados.append({
                                 "filename": filename, "id": doc_id_ruta,
                                 "zona_id": asociacion["zona_id"], "centro": asociacion["centro"],
@@ -1020,7 +997,7 @@ async def upload_file(
 
                 # ── Cat-4 Excel: hospedaje (pernoctación en hoteles) ─────────
                 if asociacion.get("categoria_id") == "cat-4":
-                    print(f"📊 [UPLOAD] Excel hospedaje cat-4: {filename}")
+                    print(f"[UPLOAD] Excel hospedaje cat-4: {filename}")
                     from app.services.extractors.category4 import Category4Extractor
                     datos_hosp = Category4Extractor().extract(content, filename)
 
@@ -1067,7 +1044,7 @@ async def upload_file(
                         if existente_hosp:
                             doc_id_hosp, _ = existente_hosp
                             db.collection("facturas").document(doc_id_hosp).set(doc_data_hosp)
-                            print(f"🔄 [CAT4 HOSP] {anio_hosp}/{mes_nombre_log} actualizado: {doc_id_hosp}")
+                            print(f"[CAT4 HOSP] {anio_hosp}/{mes_nombre_log} actualizado: {doc_id_hosp}")
                             resultados.append({
                                 "filename": filename, "id": doc_id_hosp,
                                 "zona_id": asociacion["zona_id"], "centro": asociacion["centro"],
@@ -1082,8 +1059,8 @@ async def upload_file(
                             try:
                                 actualizar_resumen(db, user["uid"], doc_data_hosp, signo=1)
                             except Exception as exc_res:
-                                print(f"⚠️ [RESUMEN] {exc_res}")
-                            print(f"💾 [CAT4 HOSP] {anio_hosp}/{mes_nombre_log}: {noches_mes} noches → {doc_id_hosp}")
+                                print(f"[RESUMEN] {exc_res}")
+                            print(f"[CAT4 HOSP] {anio_hosp}/{mes_nombre_log}: {noches_mes} noches -> {doc_id_hosp}")
                             resultados.append({
                                 "filename": filename, "id": doc_id_hosp,
                                 "zona_id": asociacion["zona_id"], "centro": asociacion["centro"],
@@ -1094,7 +1071,7 @@ async def upload_file(
                     continue  # siguiente archivo
 
                 # cat-4 pero Excel no hospedaje (no debería ocurrir, cae al flujo general)
-                print(f"📊 [UPLOAD] Excel cat-4 no hospedaje: {filename}")
+                print(f"[UPLOAD] Excel cat-4 no hospedaje: {filename}")
 
             # Extracción de datos (PDF y cat-3 Excel; cat-1 Excel ya hizo continue)
             datos = extraer_datos_factura(content, filename, categoria_id)
@@ -1183,7 +1160,7 @@ async def upload_file(
 
             # ── Verificar duplicado normal (facturas con hash) ────────────────────
             if _verificar_duplicado(db, factura_numero, medidor, fecha_emision, user["uid"]):
-                print(f"⚠️ [UPLOAD] Duplicado omitido: {filename}")
+                print(f"[UPLOAD] Duplicado omitido: {filename}")
                 duplicados.append({
                     "filename": filename,
                     "factura_numero": factura_numero,
@@ -1203,12 +1180,12 @@ async def upload_file(
 
             doc_ref = db.collection("facturas").add(doc_data)
             factura_id = doc_ref[1].id
-            print(f"💾 [UPLOAD] Guardado: {filename} → ID {factura_id}")
+            print(f"[UPLOAD] Guardado: {filename} -> ID {factura_id}")
 
             try:
                 actualizar_resumen(db, user["uid"], doc_data, signo=1)
             except Exception as exc_res:
-                print(f"⚠️ [RESUMEN] No se pudo actualizar resumen: {exc_res}")
+                print(f"[RESUMEN] No se pudo actualizar resumen: {exc_res}")
 
             resultados.append({
                 "filename": filename,
@@ -1221,10 +1198,21 @@ async def upload_file(
                 "status": "success",
             })
 
+        except OCRNotAvailableError as exc:
+            # Falla de negocio esperada y controlada (no es un bug del servidor):
+            # el documento necesita OCR y está deshabilitado en este entorno.
+            logger.warning("[UPLOAD] %s: %s", filename, exc)
+            errores.append({
+                "filename": filename,
+                "error": str(exc),
+                "tipo_alerta": "ocr_no_disponible",
+            })
         except Exception as exc:
-            import traceback
-            print(f"❌ [UPLOAD] Error en {filename}: {exc}\n{traceback.format_exc()}")
-            errores.append({"filename": filename, "error": str(exc)})
+            error_id = _log_error_interno(exc, "Error procesando archivo en upload", filename=filename)
+            errores.append({
+                "filename": filename,
+                "error": f"No se pudo procesar el archivo. Código de referencia: {error_id}",
+            })
 
     partes = []
     if resultados:
@@ -1235,7 +1223,7 @@ async def upload_file(
         partes.append(f"{len(errores)} error(es)")
 
     mensaje = ", ".join(partes) if partes else "No se procesaron archivos"
-    print(f"✅ [UPLOAD] Resumen: {mensaje}")
+    print(f"[UPLOAD] Resumen: {mensaje}")
 
     return {
         "message": mensaje,
@@ -1247,91 +1235,6 @@ async def upload_file(
         "duplicados_detalle": duplicados,
         "errores_detalle": errores,
     }
-
-
-@router.post("/chat")
-async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
-    """Responde preguntas en lenguaje natural sobre las facturas del usuario."""
-    mensaje = request.message.lower()
-    respuesta = ""
-
-    try:
-        db = get_firestore_client()
-        if not db:
-            return {"response": "Lo siento, Firebase no está disponible en este entorno.", "query": request.message}
-        year_filter, mes_filter, servicio_filter = detectar_filtros(mensaje)
-
-        # ── Consultas por campo numérico específico ──────────────
-        for keywords, (campo, label) in CHAT_CAMPO_MAP:
-            if any(k in mensaje for k in keywords):
-                facturas = _obtener_facturas_filtradas(
-                    db, user["uid"], servicio_filter, year_filter, mes_filter
-                )
-                respuesta = _respuesta_campo(facturas, campo, label)
-                break
-
-        # ── Gasto total ──────────────────────────────────────────
-        else:
-            if any(k in mensaje for k in ("cuanto", "gasto", "total")):
-                facturas = _obtener_facturas_filtradas(
-                    db, user["uid"], servicio_filter, year_filter, mes_filter
-                )
-                total = sum(_monto_factura(f) for f in facturas)
-                consumo = sum(_consumo_factura(f) for f in facturas)
-
-                periodo = ""
-                if mes_filter and year_filter:
-                    mes_nombre = next(k for k, v in MESES.items() if v == mes_filter)
-                    periodo = f" en {mes_nombre} de {year_filter}"
-                elif year_filter:
-                    periodo = f" en {year_filter}"
-                elif mes_filter:
-                    mes_nombre = next(k for k, v in MESES.items() if v == mes_filter)
-                    periodo = f" en {mes_nombre}"
-
-                servicio_txt = f" en {servicio_filter.lower()}" if servicio_filter else ""
-                consumo_txt = ""
-                if consumo > 0 and servicio_filter:
-                    unidad = "kWh" if servicio_filter == "Electricidad" else "m³"
-                    consumo_txt = f" con {consumo:.2f} {unidad} consumidos"
-
-                respuesta = (
-                    f"Se gastaron ${total:.2f} USD en {len(facturas)} factura(s)"
-                    f"{servicio_txt}{periodo}{consumo_txt}."
-                )
-
-            # ── Medidores ────────────────────────────────────────
-            elif "medidor" in mensaje:
-                todas = _obtener_facturas_filtradas(db, user["uid"])
-                medidores: dict[str, dict] = {}
-                for f in todas:
-                    med = f.get("medidor")
-                    if med:
-                        entry = medidores.setdefault(med, {"cantidad": 0, "total": 0.0})
-                        entry["cantidad"] += 1
-                        entry["total"] += _monto_factura(f)
-
-                if medidores:
-                    respuesta = f"Tienes {len(medidores)} medidores registrados:\n"
-                    for med, data in list(medidores.items())[:5]:
-                        respuesta += f"- {med}: {data['cantidad']} facturas, ${data['total']:.2f} USD\n"
-                else:
-                    respuesta = "No hay medidores registrados aún."
-
-            # ── Resumen general ──────────────────────────────────
-            else:
-                todas = _obtener_facturas_filtradas(db, user["uid"])
-                monto_total = sum(_monto_factura(f) for f in todas)
-                respuesta = (
-                    f"Tienes {len(todas)} facturas registradas con un total de "
-                    f"${monto_total:.2f} USD. "
-                    "Puedes preguntarme sobre gastos por mes, año, tipo de servicio o medidores."
-                )
-
-    except Exception:
-        respuesta = "Lo siento, hubo un error procesando tu consulta. Intenta reformular la pregunta."
-
-    return {"response": respuesta, "query": request.message}
 
 
 @router.get("/stats")
@@ -1419,8 +1322,9 @@ def estadisticas(user: dict = Depends(get_current_user)):
         }
 
     except Exception as exc:
-        raise HTTPException(
-            status_code=500, detail=f"Error al obtener estadísticas: {exc}"
+        raise _http_error_interno(
+            exc, "Error al obtener estadísticas", "Error al obtener las estadísticas",
+            uid=user.get("uid"),
         ) from exc
 
 
@@ -1485,15 +1389,16 @@ def eliminar_factura(factura_id: str, user: dict = Depends(get_current_user)):
         try:
             actualizar_resumen(db, user.get("uid"), data, signo=-1)
         except Exception as exc_res:
-            print(f"⚠️ [RESUMEN] No se pudo actualizar resumen tras delete: {exc_res}")
+            print(f"[RESUMEN] No se pudo actualizar resumen tras delete: {exc_res}")
 
         return {"message": "Factura eliminada correctamente", "id": factura_id}
 
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(
-            status_code=500, detail=f"Error al eliminar factura: {exc}"
+        raise _http_error_interno(
+            exc, "Error al eliminar factura", "Error al eliminar la factura",
+            factura_id=factura_id, uid=user.get("uid"),
         ) from exc
 
 
@@ -1523,6 +1428,8 @@ def update_precios_combustible(
     user: dict = Depends(get_current_user),
 ):
     """Actualiza los precios de combustible. Los nuevos reportes usarán estos valores."""
+    _require_admin(user)
+
     db = get_firestore_client()
     if not db:
         raise HTTPException(status_code=503, detail="Firebase no disponible")
@@ -1535,5 +1442,5 @@ def update_precios_combustible(
         "updated_by": user.get("email", ""),
     }
     db.collection("config").document("precios_combustible").set(data)
-    print(f"⛽ [PRECIOS] Actualizados por {user.get('email')}: {data}")
+    print(f"[PRECIOS] Actualizados por {user.get('email')}: {data}")
     return {"message": "Precios de combustible actualizados correctamente", **data}

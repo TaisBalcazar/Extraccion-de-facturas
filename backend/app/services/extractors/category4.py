@@ -29,6 +29,8 @@ from typing import Dict, Any, Optional, List
 
 import pdfplumber
 
+from app.services.ocr_extractor import OCRNotAvailableError
+
 from app.services.schemas import Category4Schema
 from app.services.extractors.base import BaseCategoryExtractor
 
@@ -261,28 +263,35 @@ class Category4Extractor(BaseCategoryExtractor):
         extractor correspondiente (agua, papel bond o hospedaje Excel).
         """
         if filename.lower().endswith((".xlsx", ".xls")):
-            print(f"📊 [CAT4 EXTRACTOR] Excel detectado → hospedaje: {filename}")
+            print(f"[CAT4 EXTRACTOR] Excel detectado -> hospedaje: {filename}")
             return self._extract_hospedaje_excel(file_content, filename)
 
         try:
-            print(f"📖 [CAT4 EXTRACTOR] Leyendo PDF: {filename}")
+            print(f"[CAT4 EXTRACTOR] Leyendo PDF: {filename}")
 
             try:
                 texto = self.extract_pdf_text(file_content)
+            except OCRNotAvailableError:
+                # No degradar a una lectura sin OCR: el texto plano ya fue
+                # insuficiente (por eso se necesitaba OCR) — fallaría igual
+                # pero de forma silenciosa. Mejor rechazar con mensaje claro.
+                raise
             except Exception:
                 texto = self._read_pdf_text(file_content)
 
-            print(f"📖 [CAT4 EXTRACTOR] Texto extraído: {len(texto)} caracteres")
+            print(f"[CAT4 EXTRACTOR] Texto extraído: {len(texto)} caracteres")
 
             if self._is_papel_bond_report(texto):
-                print("📄 [CAT4 EXTRACTOR] Detectado: REPORTE DE PAPEL BOND")
+                print("[CAT4 EXTRACTOR] Detectado: REPORTE DE PAPEL BOND")
                 return self._extract_papel_bond(texto, filename)
             else:
-                print("💧 [CAT4 EXTRACTOR] Detectado: FACTURA DE AGUA")
+                print("[CAT4 EXTRACTOR] Detectado: FACTURA DE AGUA")
                 return self._extract_agua(texto, filename)
 
+        except OCRNotAvailableError:
+            raise
         except Exception as exc:
-            print(f"❌ [CAT4 EXTRACTOR] Error: {exc}")
+            print(f"[CAT4 EXTRACTOR] Error: {exc}")
             return self.create_error_response(str(exc))
 
     # ══════════════════════════════════════════════════════════
@@ -327,7 +336,7 @@ class Category4Extractor(BaseCategoryExtractor):
                 "Verifica que el Excel tenga esas columnas."
             )
 
-        print(f"📊 [CAT4 HOSPEDAJE] Encabezados en fila {header_row_idx} | cols={cols}")
+        print(f"[CAT4 HOSPEDAJE] Encabezados en fila {header_row_idx} | cols={cols}")
 
         noches_por_mes: Dict[int, int] = {}
         detalle: list = []
@@ -390,7 +399,7 @@ class Category4Extractor(BaseCategoryExtractor):
             "tipo_documento": "hospedaje",
             "tipo_servicio": "Hospedaje",
             "proveedor": proveedor,
-            "anio": año,
+            "year": año,
             "noches_por_mes": noches_por_mes_nombres,
             "noches_por_mes_numero": {str(m): n for m, n in sorted(noches_por_mes.items())},
             "total_noches": total_noches,
@@ -416,14 +425,14 @@ class Category4Extractor(BaseCategoryExtractor):
             datos["factura_numero"] = m.group(1).strip()
 
         # ── Fecha de emisión ───────────────────────────────
-        m = re.search(r"fecha\s+de\s+emisi[oó]n[:\s]+([0-9]{2}-[0-9]{2}-[0-9]{4})", texto, re.IGNORECASE)
+        m = re.search(r"fecha\s+de\s+emisi[oó?]n[:\s]+([0-9]{2}-[0-9]{2}-[0-9]{4})", texto, re.IGNORECASE)
         if m:
             datos["fecha_emision"] = m.group(1).strip()
 
         # ── Período / Año / Mes ────────────────────────────
         m = re.search(r"correspondiente\s+a[:\s]+(\d{4})-([a-záéíóú]+)", texto, re.IGNORECASE)
         if m:
-            datos["anio"] = int(m.group(1))
+            datos["year"] = int(m.group(1))
             mes_lower = m.group(2).strip().lower()
             datos["mes_nombre"] = mes_lower.capitalize()
             if mes_lower in self.MESES:
@@ -434,8 +443,19 @@ class Category4Extractor(BaseCategoryExtractor):
         if m:
             datos["medidor"] = m.group(1).strip()
 
+        # ── Estado del medidor ─────────────────────────────
+        m = re.search(r"estado\s+medidor\s+([A-Za-záéíóúÁÉÍÓÚñÑ]+)", texto, re.IGNORECASE)
+        if m:
+            datos["estado_medidor"] = m.group(1).strip().capitalize()
+
         # ── Categoría del medidor ──────────────────────────
-        m = re.search(r"categor[?í]a\s+([A-Za-záéíóúÁÉÍÓÚ]+)", texto, re.IGNORECASE)
+        # Acotado al bloque INFORMACION ADICIONAL para evitar capturar frases como
+        # "Categoría de facturación" que podrían aparecer antes en el texto.
+        _info_m = re.search(
+            r"INFORMACI[O\?Ó]N\s+ADICIONAL(.+?)(?=\n\s*\n|\Z)", texto, re.IGNORECASE | re.DOTALL
+        )
+        _scope = _info_m.group(1) if _info_m else texto
+        m = re.search(r"categor[?í]a\s+([A-Za-záéíóúÁÉÍÓÚ]+)", _scope, re.IGNORECASE)
         if m:
             datos["categoria"] = m.group(1).strip().capitalize()
 
@@ -533,12 +553,12 @@ class Category4Extractor(BaseCategoryExtractor):
                 l.strip() for l in texto.splitlines()
                 if l.strip() and any(k in l.lower() for k in ["agua", "consumo", "total", "m3", "basura"])
             ]
-            print(f"⚠️ [CAT4 AGUA] Campos no detectados: {faltantes}. Líneas candidatas: {lineas[:8]}")
+            print(f"[CAT4 AGUA] Campos no detectados: {faltantes}. Líneas candidatas: {lineas[:8]}")
 
         datos["extraction_success"] = True
         datos["texto_completo"] = texto[:500]
 
-        print(f"✅ [CAT4 AGUA] Extracción exitosa")
+        print(f"[CAT4 AGUA] Extracción exitosa")
         return datos
 
     # ══════════════════════════════════════════════════════════
@@ -564,7 +584,7 @@ class Category4Extractor(BaseCategoryExtractor):
         # ── Año ──────────────────────────────────────────────
         m_year = re.search(r'\b(20\d{2})\b', texto)
         if m_year:
-            datos["anio"] = int(m_year.group(1))
+            datos["year"] = int(m_year.group(1))
 
         # ── Fecha de emisión (ej: "14 de enero de 2025") ────
         m_fecha = re.search(
@@ -616,7 +636,7 @@ class Category4Extractor(BaseCategoryExtractor):
                         "total_resmas": total_resmas,
                         "peso_papel_kg": peso_kg,
                         "peso_papel_toneladas": peso_ton,
-                        "anio": datos.get("anio"),
+                        "year": datos.get("year"),
                     })
                     break
 

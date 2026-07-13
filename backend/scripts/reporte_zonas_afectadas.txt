@@ -1,0 +1,8 @@
+Facturas en zonas afectadas: 3
+
+
+zona-8 — Zona 8 - DMQ  →  será ELIMINADA (sus centros pasan a zona-2)
+Total: 3
+  id=FxxZr2inp1vodzyjPiLQ  centro=QUITO  cat=cat-1  año=2025  archivo=1.Enero25.pdf  email=utplsostenible@gmail.com
+  id=TMlxc8RoqKMe8y7xlRTE  centro=QUITO  cat=cat-1  año=None  archivo=11.Noviemb25.pdf  email=utplsostenible@gmail.com
+  id=fwGlOrMfJ8Cd6sk5C9xO  centro=QUITO  cat=cat-1  año=2025  archivo=7.Julio.pdf  email=utplsostenible@gmail.com

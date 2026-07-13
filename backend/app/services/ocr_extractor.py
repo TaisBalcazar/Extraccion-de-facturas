@@ -9,11 +9,23 @@ import logging
 import fitz  # PyMuPDF
 import numpy as np
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 _MIN_CHARS = 80  # Mínimo de caracteres significativos para considerar extracción exitosa
 
 _reader = None  # Singleton EasyOCR
+
+MENSAJE_OCR_DESHABILITADO = (
+    "No se pudo extraer el texto de este documento. El reconocimiento óptico "
+    "(OCR) no está disponible en este entorno."
+)
+
+
+class OCRNotAvailableError(Exception):
+    """PDF requiere OCR pero DISABLE_OCR=true en este entorno."""
+    pass
 
 
 def _get_reader():
@@ -21,9 +33,9 @@ def _get_reader():
     global _reader
     if _reader is None:
         import easyocr
-        print("🔄 [OCR] Inicializando EasyOCR...")
+        print("[OCR] Inicializando EasyOCR...")
         _reader = easyocr.Reader(["es", "en"], gpu=False, verbose=False)
-        print("✅ [OCR] EasyOCR listo.")
+        print("[OCR] EasyOCR listo.")
     return _reader
 
 
@@ -165,33 +177,49 @@ def extract_text_smart(file_content: bytes, pdfplumber_text: str) -> tuple[str, 
         logger.info("Texto suficiente con PyMuPDF nativo.")
         return pymupdf_text, False
 
-    print("🔍 [OCR] PDF parece escaneado — aplicando OCR...")
+    if settings.disable_ocr:
+        # No se importa easyocr/cv2/pytesseract/torch en absoluto: falla aquí,
+        # antes de cualquier import perezoso de los motores de OCR.
+        logger.warning("PDF requiere OCR pero DISABLE_OCR=true — se rechaza sin intentar OCR.")
+        raise OCRNotAvailableError(MENSAJE_OCR_DESHABILITADO)
+
+    print("[OCR] PDF parece escaneado — aplicando OCR...")
+
+    best_ocr_text = ""  # Mejor texto obtenido aunque sea inferior al umbral
 
     # Paso 3: EasyOCR
     try:
         ocr_text = extract_text_with_ocr(file_content)
         if not _texto_insuficiente(ocr_text):
             return ocr_text, True
-        print(f"⚠️ [OCR] EasyOCR devolvió texto insuficiente ({len(ocr_text)} chars)")
+        print(f"[OCR] EasyOCR devolvió texto parcial ({len(ocr_text)} chars)")
+        if ocr_text:
+            best_ocr_text = ocr_text
     except ImportError as e:
-        print(f"❌ [OCR] EasyOCR ImportError: {e}")
+        print(f"[OCR] EasyOCR ImportError: {e}")
     except Exception as e:
         import traceback
-        print(f"❌ [OCR] EasyOCR falló: {type(e).__name__}: {e}")
+        print(f"[OCR] EasyOCR falló: {type(e).__name__}: {e}")
         print(traceback.format_exc())
 
     # Paso 4: pytesseract como último recurso
     try:
         tess_text = _extract_text_tesseract(file_content)
         if not _texto_insuficiente(tess_text):
-            print("✅ [OCR] Texto extraído con pytesseract.")
+            print("[OCR] Texto extraído con pytesseract.")
             return tess_text, True
-        print("⚠️ [OCR] pytesseract también devolvió texto insuficiente.")
-        return tess_text, True
+        print("[OCR] pytesseract también devolvió texto insuficiente.")
+        if len(tess_text) > len(best_ocr_text):
+            best_ocr_text = tess_text
     except ImportError as e:
-        print(f"❌ [OCR] pytesseract ImportError: {e}")
+        print(f"[OCR] pytesseract ImportError: {e}")
     except Exception as e:
-        print(f"❌ [OCR] pytesseract falló: {type(e).__name__}: {e}")
+        print(f"[OCR] pytesseract falló: {type(e).__name__}: {e}")
 
-    print("❌ [OCR] Todos los motores OCR fallaron, devolviendo texto original.")
+    # Usar el mejor resultado parcial si existe, aunque sea inferior al umbral
+    if best_ocr_text:
+        print(f"[OCR] Usando mejor texto parcial disponible ({len(best_ocr_text)} chars)")
+        return best_ocr_text, True
+
+    print("[OCR] Todos los motores OCR fallaron, devolviendo texto original.")
     return pdfplumber_text, False

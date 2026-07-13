@@ -59,19 +59,21 @@ class PDFExtractor:
     
     def _extract_text(self) -> None:
         """Extrae y cachea el texto del PDF; usa OCR si el PDF está escaneado."""
+        from app.services.ocr_extractor import extract_text_smart, OCRNotAvailableError
         try:
             texto = ""
             for page in self.pdf_doc.pages:
                 texto += page.extract_text() or ""
 
-            from app.services.ocr_extractor import extract_text_smart
             texto, ocr_usado = extract_text_smart(self._content, texto)
             if ocr_usado:
-                print(f"📷 OCR aplicado en '{self._filename}'")
+                print(f"OCR aplicado en '{self._filename}'")
 
             self._text_cache = texto
+        except OCRNotAvailableError:
+            raise
         except Exception as e:
-            print(f"❌ Error extrayendo texto PDF: {e}")
+            print(f"Error extrayendo texto PDF: {e}")
             self._text_cache = ""
     
     def extract_text(self) -> str:
@@ -93,7 +95,7 @@ class PDFExtractor:
                 return []
             return self.pdf_doc.pages[page_idx].extract_tables() or []
         except Exception as e:
-            print(f"⚠️ Error extrayendo tablas: {e}")
+            print(f"Error extrayendo tablas: {e}")
             return []
     
     def get_all_tables(self) -> Dict[int, list]:
@@ -110,7 +112,7 @@ class PDFExtractor:
                 if tables:
                     result[idx] = tables
         except Exception as e:
-            print(f"⚠️ Error extrayendo todas las tablas: {e}")
+            print(f"Error extrayendo todas las tablas: {e}")
         return result
     
     def set_razon_social(self, razon_social: str, es_valida: bool) -> None:

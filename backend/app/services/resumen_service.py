@@ -24,6 +24,16 @@ Estructura del documento:
       }
     }
   },
+  "cat-3": {
+    "por_año": {
+      "2024": {
+        "count": 48, "km_total_total": 62000.0,
+        "km_nacional_total": 12000.0, "km_internacional_total": 50000.0,
+        "vuelos_total": 48.0,
+        "por_mes": { "1": { "count": 4, "km_total": 5200.0, ... }, ... }
+      }
+    }
+  },
   ...
 }
 """
@@ -36,7 +46,7 @@ from google.cloud.firestore_v1.transforms import Increment
 
 def _extraer_año_mes(datos: dict) -> tuple[Optional[int], Optional[int]]:
     """Extrae año y mes de un documento de factura."""
-    anio = datos.get("anio")
+    anio = datos.get("year")
     mes = datos.get("mes_numero")
     if anio and mes:
         return int(anio), int(mes)
@@ -74,6 +84,15 @@ def _campos_por_categoria(categoria_id: str, datos: dict) -> dict:
             "valor_total": float(
                 datos.get("valor_total") or datos.get("total_sec_elec") or 0
             ),
+        }
+    if categoria_id == "cat-3":
+        km = float(datos.get("km_total") or 0)
+        es_nacional = str(datos.get("tipo_vuelo") or "").lower() == "nacional"
+        return {
+            "km_total": km,
+            "km_nacional": km if es_nacional else 0.0,
+            "km_internacional": 0.0 if es_nacional else km,
+            "vuelos": float(datos.get("cantidad_viajes") or 0),
         }
     if categoria_id == "cat-4":
         return {

@@ -12,6 +12,7 @@ import pdfplumber
 
 from app.services.schemas import Category5Schema
 from app.services.extractors.base import BaseCategoryExtractor
+from app.services.ocr_extractor import OCRNotAvailableError
 
 
 class Category5Extractor(BaseCategoryExtractor):
@@ -216,7 +217,7 @@ class Category5Extractor(BaseCategoryExtractor):
                     if page_tables:
                         tablas.extend(page_tables)
         except Exception as exc:
-            print(f"⚠️ [CAT5 EXTRACTOR] Error leyendo tablas del PDF: {exc}")
+            print(f"[CAT5 EXTRACTOR] Error leyendo tablas del PDF: {exc}")
 
         if tablas:
             registros = self._parsear_tablas_periodos(tablas)
@@ -315,9 +316,9 @@ class Category5Extractor(BaseCategoryExtractor):
         se devuelven en una lista bajo el campo ``periodos``.
         """
         try:
-            print(f"📖 [CAT5 EXTRACTOR] Leyendo PDF: {filename}")
+            print(f"[CAT5 EXTRACTOR] Leyendo PDF: {filename}")
             texto_completo = self.extract_pdf_text(file_content)
-            print(f"📖 [CAT5 EXTRACTOR] Texto extraído: {len(texto_completo)} caracteres")
+            print(f"[CAT5 EXTRACTOR] Texto extraído: {len(texto_completo)} caracteres")
 
             datos = self.initialize_data_dict()
             datos["filename"] = filename
@@ -387,14 +388,16 @@ class Category5Extractor(BaseCategoryExtractor):
                 datos["horas_trabajadas_bimestre2"] = bim2
 
             if not periodos and bim1 is None and bim2 is None:
-                print("⚠️ [CAT5 EXTRACTOR] No se detectaron bloques de períodos ni bimestres")
+                print("[CAT5 EXTRACTOR] No se detectaron bloques de períodos ni bimestres")
 
             datos["extraction_success"] = True
             datos["texto_completo"] = texto_completo[:500]
 
-            print(f"✅ [CAT5 EXTRACTOR] Extracción exitosa")
+            print(f"[CAT5 EXTRACTOR] Extracción exitosa")
             return datos
 
+        except OCRNotAvailableError:
+            raise
         except Exception as exc:
-            print(f"❌ [CAT5 EXTRACTOR] Error: {exc}")
+            print(f"[CAT5 EXTRACTOR] Error: {exc}")
             return self.create_error_response(str(exc))

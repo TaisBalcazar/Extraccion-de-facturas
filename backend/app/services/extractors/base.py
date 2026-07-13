@@ -77,11 +77,11 @@ class BaseCategoryExtractor(ABC):
             from app.services.ocr_extractor import extract_text_smart
             texto_completo, ocr_usado = extract_text_smart(file_content, texto_completo)
             if ocr_usado:
-                print(f"📷 OCR aplicado ({self.category_name})")
+                print(f"OCR aplicado ({self.category_name})")
 
             return texto_completo
         except Exception as e:
-            print(f"❌ Error extrayendo texto PDF: {e}")
+            print(f"Error extrayendo texto PDF: {e}")
             raise
     
     def extract_date(self, fecha_str: str) -> Optional[str]:
@@ -195,29 +195,6 @@ class BaseCategoryExtractor(ABC):
         data["category_id"] = self.category_id
         data["category_name"] = self.category_name
         return data
-    
-    def detect_service_type(self, texto: str) -> str:
-        """
-        Intenta detectar el tipo de servicio basado en el contenido.
-        
-        Puede ser sobrescrito por subclases si necesitan lógica específica.
-        
-        Args:
-            texto: Texto a analizar
-        
-        Returns:
-            Tipo de servicio detectado o "Desconocido"
-        """
-        texto_lower = texto.lower()
-        
-        if any(word in texto_lower for word in ["luz", "electricidad", "electrica", "kwh", "medidor"]):
-            return "Electricidad"
-        elif any(word in texto_lower for word in ["agua", "potable", "m3", "consumo"]):
-            return "Agua"
-        elif any(word in texto_lower for word in ["gasolina", "diesel", "combustible", "galones"]):
-            return "Combustible"
-        else:
-            return "Desconocido"
     
     def find_dates_in_text(self, text: str) -> list:
         """

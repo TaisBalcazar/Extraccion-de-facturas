@@ -25,6 +25,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.firebase import get_firestore_client, init_firebase
+from app.services.resumen_service import reconstruir_resumen
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -279,9 +280,9 @@ def main():
     print(f"  Completado: {insertados} insertados, {omitidos} omitidos, {errores} errores")
     print("=" * 60)
     if insertados > 0:
-        print("\n[!] Recuerda reconstruir el resumen del usuario para que el dashboard")
-        print("    refleje los nuevos datos:")
-        print("    python scripts/backfill_resumenes.py --force")
+        print(f"\n[RESUMEN] Reconstruyendo resumenes/{meta['owner_uid']}...")
+        reconstruir_resumen(db, meta["owner_uid"])
+        print("[RESUMEN] OK")
 
 
 if __name__ == "__main__":

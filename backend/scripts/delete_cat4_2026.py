@@ -24,6 +24,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.core.firebase import get_firestore_client  # noqa: E402
+from app.services.resumen_service import reconstruir_resumen  # noqa: E402
 
 
 DEFAULT_YEAR = 2026
@@ -105,6 +106,11 @@ def main() -> int:
         print("Operación cancelada.")
         return 1
 
+    owner_uids_afectados = {
+        (doc.to_dict() or {}).get("owner_uid") for doc in targets
+    }
+    owner_uids_afectados.discard(None)
+
     deleted = 0
     batch = db.batch()
     pending = 0
@@ -121,6 +127,11 @@ def main() -> int:
 
     if pending:
         batch.commit()
+
+    for uid in owner_uids_afectados:
+        print(f"\n[RESUMEN] Reconstruyendo resumenes/{uid}...")
+        reconstruir_resumen(db, uid)
+        print("[RESUMEN] OK")
 
     print(f"Eliminados {deleted} documento(s).")
     return 0

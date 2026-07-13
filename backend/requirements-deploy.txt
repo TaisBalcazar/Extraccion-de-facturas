@@ -1,0 +1,26 @@
+# Imagen de despliegue (Render) para el Producto 1 (CarbonTrack UTPL).
+#
+# Excluye el fallback OCR (easyocr, pytesseract, opencv-python-headless y sus
+# dependencias transitivas — torch, torchvision, scipy, scikit-image, Shapely
+# — que en conjunto pesan ~700 MB en disco). EERSSA (cat-2) y Municipio de
+# Loja (cat-4) emiten PDFs digitales, no escaneados, así que el OCR no se
+# necesita en este despliegue (ver DISABLE_OCR en app/core/config.py).
+#
+# Debe usarse junto con DISABLE_OCR=true — si DISABLE_OCR no está activo y
+# un PDF requiere OCR, el import de easyocr fallará porque el paquete no
+# está instalado en esta imagen.
+#
+# Mantenimiento: si agregas/quitas una dependencia NO relacionada con OCR en
+# requirements.txt, replícala aquí también. Es una lista corta (11 líneas),
+# el costo de mantenerla sincronizada a mano es bajo.
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+firebase-admin==6.4.0
+python-dotenv==1.0.1
+pdfplumber==0.11.4
+python-multipart==0.0.9
+pymupdf==1.24.11
+numpy>=1.24.0
+Pillow>=10.0.0
+openpyxl>=3.1.0
+airportsdata>=20240101

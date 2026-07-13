@@ -35,11 +35,11 @@ def init_firebase() -> None:
     credentials_path = settings.firebase_credentials_path
     try:
         if credentials_path and os.path.exists(str(credentials_path)):
-            print(f"📂 Cargando credenciales desde archivo: {credentials_path}")
+            print(f"Cargando credenciales desde archivo: {credentials_path}")
             sa = _load_and_fix_service_account(str(credentials_path))
             cred = credentials.Certificate(sa)
         else:
-            print("📋 Cargando credenciales desde variables de entorno...")
+            print("Cargando credenciales desde variables de entorno...")
             creds_dict = settings.firebase_credentials_dict
             if isinstance(creds_dict, dict) and creds_dict.get("client_email"):
                 creds_dict = _fix_dict_private_key(creds_dict)
@@ -49,11 +49,11 @@ def init_firebase() -> None:
 
         firebase_admin.initialize_app(cred)
         _firebase_initialized = True
-        print("✅ Firebase inicializado correctamente")
+        print("Firebase inicializado correctamente")
 
     except Exception as exc:
         if getattr(settings, "app_env", "development") == "development":
-            print(f"⚠️  No se pudo inicializar Firebase (modo development): {exc}")
+            print(f"No se pudo inicializar Firebase (modo development): {exc}")
             return
         raise
 

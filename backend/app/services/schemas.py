@@ -402,12 +402,6 @@ class Category2Schema(CategorySchema):
             description="Número de días del período facturado"
         ),
         FieldDefinition(
-            name="anio",
-            label="Año",
-            type="numeric",
-            description="Año derivado del período de facturación"
-        ),
-        FieldDefinition(
             name="mes_numero",
             label="Mes número",
             type="numeric",

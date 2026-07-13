@@ -12,6 +12,17 @@ class Settings:
     allowed_origins_raw: str = os.getenv("ALLOWED_ORIGINS", "http://localhost:4200")
     firebase_credentials_path_raw: str = os.getenv("FIREBASE_CREDENTIALS_PATH", "")
 
+    # Despliegue temporal Producto 1 (CarbonTrack UTPL): restringe qué categorías
+    # devuelve GET /categorias. Vacío (default) = sin restricción, se devuelven todas.
+    # Ej: ENABLED_CATEGORIES=cat-2,cat-4
+    enabled_categories_raw: str = os.getenv("ENABLED_CATEGORIES", "")
+
+    # Despliegue temporal Producto 1: EERSSA (cat-2) y Municipio de Loja (cat-4)
+    # emiten PDFs digitales, no escaneados — el fallback OCR (easyocr/cv2/torch)
+    # no es necesario y consume mucha memoria. Default false para no romper el
+    # entorno local de desarrollo. Ej: DISABLE_OCR=true
+    disable_ocr_raw: str = os.getenv("DISABLE_OCR", "false")
+
     # Firebase credentials from environment variables
     firebase_project_id: str = os.getenv("FIREBASE_PROJECT_ID", "")
     firebase_private_key_id: str = os.getenv("FIREBASE_PRIVATE_KEY_ID", "")
@@ -26,6 +37,14 @@ class Settings:
     @property
     def allowed_origins(self) -> list[str]:
         return [origin.strip() for origin in self.allowed_origins_raw.split(",") if origin.strip()]
+
+    @property
+    def enabled_categories(self) -> list[str]:
+        return [cat.strip() for cat in self.enabled_categories_raw.split(",") if cat.strip()]
+
+    @property
+    def disable_ocr(self) -> bool:
+        return self.disable_ocr_raw.strip().lower() in ("1", "true", "yes", "on")
 
     @property
     def project_root(self) -> Path:
@@ -47,10 +66,10 @@ class Settings:
 
         for candidate in candidates:
             if candidate.exists():
-                print(f"🔑 Credenciales Firebase encontradas: {candidate}")
+                print(f"Credenciales Firebase encontradas: {candidate}")
                 return candidate
 
-        print(f"⚠️  No se encontró archivo de credenciales. Path configurado: '{self.firebase_credentials_path_raw}'")
+        print(f"No se encontró archivo de credenciales. Path configurado: '{self.firebase_credentials_path_raw}'")
         return None
 
     @property

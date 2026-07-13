@@ -112,7 +112,7 @@ class Category3Extractor(BaseCategoryExtractor):
         super().__init__(Category3Schema())
 
     def extract(self, file_content: bytes, filename: str) -> Dict[str, Any]:
-        print(f"✈️  [CAT3 EXTRACTOR] Procesando vuelos: {filename}")
+        print(f"[CAT3 EXTRACTOR] Procesando vuelos: {filename}")
         datos = self.initialize_data_dict()
         datos['filename'] = filename
         datos['tipo_servicio'] = 'Vuelos'
@@ -121,7 +121,7 @@ class Category3Extractor(BaseCategoryExtractor):
             datos.update(self._procesar_excel(file_content))
             datos['extraction_success'] = True
         except Exception as e:
-            print(f"❌ [CAT3 EXTRACTOR] Error: {e}")
+            print(f"[CAT3 EXTRACTOR] Error: {e}")
             datos['extraction_success'] = False
             datos['error'] = str(e)
 
@@ -189,7 +189,7 @@ class Category3Extractor(BaseCategoryExtractor):
             ruta = str(ruta_raw).strip()
             km, tipo = _calcular_ruta(ruta)
             if km == 0:
-                print(f"⚠️  [CAT3] Ruta sin km calculable: '{ruta}'")
+                print(f"[CAT3] Ruta sin km calculable: '{ruta}'")
                 continue
 
             # Año: columna AÑO explícita → objeto fecha → texto "DD M YYYY"
