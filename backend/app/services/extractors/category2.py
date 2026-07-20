@@ -329,7 +329,7 @@ class Category2Extractor(BaseCategoryExtractor):
                                 if re.match(r"^[0-9]", next_cell):
                                     data_start = header_row + 1
                             
-                            best_consumo: Optional[float] = None
+                            consumos_filas: list[float] = []
 
                             for data_row in table[data_start:]:
                                 if not data_row:
@@ -354,7 +354,9 @@ class Category2Extractor(BaseCategoryExtractor):
                                 if descripcion_idx is not None and descripcion_idx < len(raw_values):
                                     descripcion = self._normalize_header_cell(raw_values[descripcion_idx])
 
-                                # Fila "energía activa total" es autoritativa, incluso con consumo 0.
+                                # Fila "energía activa total" es autoritativa (ya es la suma de
+                                # todas las bandas horarias), incluso con consumo 0. Se retorna de
+                                # inmediato para no sumarla de nuevo con las bandas individuales.
                                 if "energiaactivatotal" in descripcion:
                                     return consumo_total if consumo_total is not None else 0.0
 
@@ -369,11 +371,14 @@ class Category2Extractor(BaseCategoryExtractor):
                                     # Si algo sale invertido por OCR, usar el mayor entre ambos.
                                     consumo_total = max(consumo_total, consumo_subtotal)
 
-                                if best_consumo is None or consumo_total > best_consumo:
-                                    best_consumo = consumo_total
+                                consumos_filas.append(consumo_total)
 
-                            if best_consumo is not None:
-                                return best_consumo
+                            # Tarifas con demanda horaria (ej. BTCGCD31) reportan el consumo en
+                            # varias filas kWh (hor. A, B, C) que se deben sumar para obtener el
+                            # consumo total del período — cada fila es una banda horaria distinta,
+                            # no un valor alternativo del mismo total.
+                            if consumos_filas:
+                                return round(sum(consumos_filas), 3)
         except Exception as exc:
             print(f"[CAT2 EXTRACTOR] Error leyendo tablas para consumo_total: {exc}")
 
